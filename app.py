@@ -1,153 +1,140 @@
 import os
-import streamlit as st
-
 from langchain_community.document_loaders import PyPDFLoader
 from langchain_text_splitters import RecursiveCharacterTextSplitter
 from langchain_community.embeddings import HuggingFaceEmbeddings
 from langchain_community.vectorstores import FAISS
-
 from langchain_google_genai import ChatGoogleGenerativeAI
-
 from langchain_core.prompts import ChatPromptTemplate
 from langchain_core.output_parsers import StrOutputParser
 from langchain_core.runnables import RunnablePassthrough
+import streamlit as st
+import numpy
+import time
+from PIL import Image
 
-# -------------------------------------------------------
-
+# ================= STEP 2 : API KEYS =========================
 
 st.set_page_config(
-    page_title="Chat with PDF",
+    page_title="chat-with-pdf",
     layout="wide"
 )
 
-st.title("📚 RAG Based Chat With PDF")
+st.sidebar.title("SET API CONFIG")
+st.title("RAG Based Chat With PDF 📚")
 
-# -------------------------------------------------------
-
-
-st.sidebar.title("API Configuration")
-
-google_api_key = st.sidebar.text_input(
-    "Google API Key",
+GOOGLE_API_KEY = st.sidebar.text_input(
+    "GOOGLE_API_KEY",
     type="password"
 )
 
-if google_api_key:
-    os.environ["GOOGLE_API_KEY"] = google_api_key
-    st.sidebar.success("API Key Loaded ✅")
+os.environ["GOOGLE_API_KEY"] = GOOGLE_API_KEY
+
+if GOOGLE_API_KEY:
+    st.sidebar.success("API Key Loaded!!")
 else:
-    st.sidebar.info("Enter your Google API Key")
+    st.sidebar.info("Give API Key")
 
-# Stop if API key not entered
-if not google_api_key:
-    st.stop()
-
-# -------------------------------------------------------
-
+# =================== STEP 3 LOAD PDF ====================
 
 uploaded_file = st.sidebar.file_uploader(
-    "Upload PDF",
+    "Upload PDF File",
     type=["pdf"]
 )
 
-if uploaded_file is None:
-    st.info("Please upload a PDF file.")
-    st.stop()
+if uploaded_file:
+    with st.spinner("Reading PDF File..."):
+        data = uploaded_file.read()
+        st.sidebar.success("PDF Uploaded Successfully!")
 
-# Save uploaded PDF
+if uploaded_file is not None:
 
-save_dir = "pdf_files"
-os.makedirs(save_dir, exist_ok=True)
+    save_dir = "pdf_files"
 
-file_path = os.path.join(save_dir, uploaded_file.name)
+    if not os.path.exists(save_dir):
+        os.makedirs(save_dir)
 
-with open(file_path, "wb") as f:
-    f.write(uploaded_file.getbuffer())
+    file_path = os.path.join(save_dir, uploaded_file.name)
 
-st.success(f"Uploaded: {uploaded_file.name}")
+    with open(file_path, "wb") as f:
+        f.write(uploaded_file.getbuffer())
 
-# -------------------------------------------------------
+    st.write(file_path)
 
+    # ================== STEP 4 LOAD RESOURCES =====================
 
-@st.cache_data
-def load_documents(path):
-    loader = PyPDFLoader(path)
-    return loader.load()
+    @st.cache_data
+    def load_documents():
+        loader = PyPDFLoader(file_path)
+        documents = loader.load()
+        return documents
 
-documents = load_documents(file_path)
+    # st.cache_data: to load data only one time
+    # st.cache_resource : to load resource only one time
 
-# -------------------------------------------------------
+    @st.cache_resource
+    def load_embedding():
+        embeddings = HuggingFaceEmbeddings(
+            model_name="all-MiniLM-L6-v2"
+        )
+        return embeddings
 
+    @st.cache_data
+    def get_splitted_chunks(documents):
+        splitter = RecursiveCharacterTextSplitter(
+            chunk_size=1000,
+            chunk_overlap=200
+        )
 
-@st.cache_data
-def split_documents(documents):
-    splitter = RecursiveCharacterTextSplitter(
-        chunk_size=1000,
-        chunk_overlap=200
+        chunks = splitter.split_documents(documents)
+        return chunks
+
+    # ================= STEP 5 GET AND LOAD DOCS =================
+
+    documents = load_documents()
+    embeddings = load_embedding()
+    chunks = get_splitted_chunks(documents)
+
+    @st.cache_resource
+    def create_vector_db(chunks, embeddings):
+        vectorstore = FAISS.from_documents(
+            chunks,
+            embeddings
+        )
+
+        vectorstore.save_local("faiss_index")
+        return vectorstore
+
+    @st.cache_resource
+    def create_retriever(vectorstore, k_value):
+        retriever = vectorstore.as_retriever(
+            search_kwargs={"k": k_value}
+        )
+        return retriever
+
+    vectorstore = create_vector_db(chunks, embeddings)
+
+    k_slider = st.sidebar.slider(
+        "Select Top K-Value",
+        min_value=1,
+        max_value=10,
+        value=3
     )
 
-    return splitter.split_documents(documents)
-
-chunks = split_documents(documents)
-
-# -------------------------------------------------------
-
-
-@st.cache_resource
-def load_embeddings():
-    return HuggingFaceEmbeddings(
-        model_name="sentence-transformers/all-MiniLM-L6-v2"
+    retriever = create_retriever(
+        vectorstore,
+        k_slider
     )
 
-embeddings = load_embeddings()
+    # ======================== STEP 6: LCEL RAG CHAIN ========================
 
-# -------------------------------------------------------
-
-
-@st.cache_resource
-def create_vector_db(chunks, embeddings):
-    vectorstore = FAISS.from_documents(
-        documents=chunks,
-        embedding=embeddings
+    llm = ChatGoogleGenerativeAI(
+        model="gemini-2.5-flash"
     )
-    return vectorstore
 
-vectorstore = create_vector_db(chunks, embeddings)
-
-# -------------------------------------------------------
-
-
-k_value = st.sidebar.slider(
-    "Top K Chunks",
-    min_value=1,
-    max_value=10,
-    value=4
-)
-
-retriever = vectorstore.as_retriever(
-    search_kwargs={"k": k_value}
-)
-
-# -------------------------------------------------------
-# Gemini LLM
-# -------------------------------------------------------
-
-llm = ChatGoogleGenerativeAI(
-    model="gemini-2.5-flash",
-    temperature=0
-)
-
-# -------------------------------------------------------
-# Prompt
-# -------------------------------------------------------
-
-prompt = ChatPromptTemplate.from_template(
-"""
+    prompt = ChatPromptTemplate.from_template("""
 Answer the question using ONLY the context below.
 
-If the answer is not found in the context,
-reply exactly:
-
+If the answer isn't in the context, say:
 "I don't know based on the document."
 
 Context:
@@ -155,48 +142,34 @@ Context:
 
 Question:
 {question}
-"""
-)
+""")
 
-# -------------------------------------------------------
-# Format Documents
-# -------------------------------------------------------
+    def format_docs(docs):
+        return "\n\n".join(
+            doc.page_content for doc in docs
+        )
 
-def format_docs(docs):
-    return "\n\n".join(doc.page_content for doc in docs)
+    with st.spinner("Building RAG Chain..."):
 
-# -------------------------------------------------------
-# Build RAG Chain
-# -------------------------------------------------------
+        rag_chain = (
+            {
+                "context": retriever | format_docs,
+                "question": RunnablePassthrough(),
+            }
+            | prompt
+            | llm
+            | StrOutputParser()
+        )
 
-rag_chain = (
-    {
-        "context": retriever | format_docs,
-        "question": RunnablePassthrough()
-    }
-    | prompt
-    | llm
-    | StrOutputParser()
-)
+    # ======================== GET USER INPUT ========================
 
-# -------------------------------------------------------
-# Ask Question
-# -------------------------------------------------------
+    user_question = st.text_area("Ask Question:")
 
-st.header("Ask Questions")
+    if user_question:
 
-question = st.text_input("Enter your question")
+        if st.button("Get Answer"):
 
-if st.button("Get Answer"):
-
-    if question.strip() == "":
-        st.warning("Please enter a question.")
-    else:
-
-        with st.spinner("Searching document..."):
-
-            response = rag_chain.invoke(question)
-
-        st.subheader("Answer")
-
-        st.write(response)
+            with st.spinner("Please wait..."):
+                st.write_stream(
+                    rag_chain.stream(user_question)
+                )
