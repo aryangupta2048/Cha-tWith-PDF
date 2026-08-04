@@ -90,7 +90,7 @@ if uploaded_file is not None:
 
     # ================= STEP 5 GET AND LOAD DOCS =================
 
-    documents = load_documents()
+   documents = load_documents()
     embeddings = load_embedding()
     chunks = get_splitted_chunks(documents)
 
@@ -124,7 +124,6 @@ if uploaded_file is not None:
         vectorstore,
         k_slider
     )
-
     # ======================== STEP 6: LCEL RAG CHAIN ========================
 
     llm = ChatGoogleGenerativeAI(
