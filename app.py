@@ -84,7 +84,7 @@ def create_vector_db(chunks,_embeddings):
 
 @st.cache_data
 def create_retriever(vectorstore, k_value):
-  retriever = _vecotrstore.as_retriever(search_kwargs("k": k_value))
+  retriever = _vecotrstore.as_retriever(search_kwargs{"k": k_value})
   return retriever
 
 _vectorstore = create_vector_db(chunks, embeddings)
